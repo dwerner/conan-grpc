@@ -1,15 +1,15 @@
 from conans import ConanFile, CMake, tools
 import os
-
+import shutil
 
 class gRPCConan(ConanFile):
     name = "gRPC"
-    version = "1.9.1"
+    version = "1.10.0"
     folder = "grpc-%s" % version
     description = "Google's RPC library and framework."
     url = "https://github.com/inexorgame/conan-grpc.git"
     license = "Apache-2.0"
-    requires = "zlib/1.2.11@conan/stable", "OpenSSL/1.1.0g@conan/stable", "protobuf/3.5.1@bincrafters/stable", "gflags/2.2.1@bincrafters/stable", "c-ares/1.14.0@inexorgame/testing"
+    requires = "zlib/1.2.11@conan/stable", "OpenSSL/1.1.0g@conan/stable", "protobuf/3.5.1@bincrafters/stable", "gflags/2.2.1@bincrafters/stable", "c-ares/1.14.0@conan/stable" , "benchmark/1.3.0@bincrafters/testing"
     settings = "os", "compiler", "build_type", "arch"
     options = {
             "shared": [True, False],
@@ -36,7 +36,15 @@ class gRPCConan(ConanFile):
         tools.replace_in_file(cmake_name, "project(${PACKAGE_NAME} C CXX)", '''project(${PACKAGE_NAME} C CXX)
         include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
         conan_basic_setup()''')
-        tools.replace_in_file(cmake_name, "\"module\" CACHE STRING ", '''\"package\" CACHE STRING ''') # tell grpc to use the find_package version
+
+        tools.replace_in_file(cmake_name, "set(gRPC_ZLIB_PROVIDER \"module\"", '''set(gRPC_ZLIB_PROVIDER \"package\"''')
+        tools.replace_in_file(cmake_name, "set(gRPC_SSL_PROVIDER \"module\"", '''set(gRPC_SSL_PROVIDER \"package\"''')
+        tools.replace_in_file(cmake_name, "set(gRPC_PROTOBUF_PROVIDER \"module\"", '''set(gRPC_PROTOBUF_PROVIDER \"package\"''')
+        tools.replace_in_file(cmake_name, "set(gRPC_GFLAGS_PROVIDER \"module\"", '''set(gRPC_GFLAGS_PROVIDER \"package\"''')
+        tools.replace_in_file(cmake_name, "set(gRPC_BENCHMARK_PROVIDER \"module\"", '''set(gRPC_BENCHMARK_PROVIDER \"package\"''')
+
+        tools.replace_in_file(cmake_name, "set(gRPC_CARES_PROVIDER \"module\"", '''set(gRPC_CARES_PROVIDER \"package\"''')
+
         # skip installing the headers, TODO: use these!
         # gRPC > 1.6 changes the CMAKE_INSTALL_INCLUDEDIR vars to gRPC_INSTALL_INCLUDEDIR !!
         tools.replace_in_file(cmake_name, '''  install(FILES ${_hdr}
@@ -57,14 +65,6 @@ class gRPCConan(ConanFile):
         add_library(grpc++_reflection''')
         tools.replace_in_file(cmake_name, "add_library(grpc++_unsecure", '''endif(CONAN_ENABLE_REFLECTION_LIBS)
         add_library(grpc++_unsecure''')
-        # tools.replace_in_file(cmake_name, "add_library(grpc_csharp_ext", '''if(CONAN_ADDITIONAL_PLUGINS)
-        # add_library(grpc_csharp_ext''') # not available anymore in v1.1.0
-        # tools.replace_in_file(cmake_name, "add_executable(gen_hpack_tables", '''endif(CONAN_ADDITIONAL_PLUGINS)
-        tools.replace_in_file(cmake_name, "add_executable(gen_hpack_tables", '''
-        if(CONAN_ADDITIONAL_BINS)
-        add_executable(gen_hpack_tables''')
-        tools.replace_in_file(cmake_name, "add_executable(grpc_cpp_plugin", '''endif(CONAN_ADDITIONAL_BINS)
-        add_executable(grpc_cpp_plugin''')
         tools.replace_in_file(cmake_name, "add_executable(grpc_csharp_plugin", '''if(CONAN_ADDITIONAL_PLUGINS)
         add_executable(grpc_csharp_plugin''')
         # gRPC > 1.6 changes the CMAKE_INSTALL_BINDIR vars to gRPC_INSTALL_BINDIR !!
@@ -83,8 +83,20 @@ endif(CONAN_ADDITIONAL_PLUGINS)''')
 
     def build(self):
         tmp_install_dir = "{}/install".format(self.build_folder)
-        os.mkdir(tmp_install_dir)
-        args = ["-DgRPC_INSTALL=ON", '-DCMAKE_INSTALL_PREFIX="{}"'.format(tmp_install_dir)] # We need the generated cmake/ files (bc they depend on the list of targets, which is dynamic)
+
+        if not os.path.exists(tmp_install_dir):
+            os.mkdir(tmp_install_dir)
+
+        args = [
+                "-DgRPC_INSTALL=ON", 
+                "-DgRPC_CARES_PROVIDER=package",
+                "-DgRPC_ZLIB_PROVIDER=package",
+                "-DgRPC_SSL_PROVIDER=package",
+                "-DgRPC_PROTOBUF_PROVIDER=package",
+                "-DgRPC_GFLAGS_PROVIDER=package",
+                "-DgRPC_BENCHMARK_PROVIDER=package",
+                '-DCMAKE_INSTALL_PREFIX="{}"'.format(tmp_install_dir)
+                ] # We need the generated cmake/ files (bc they depend on the list of targets, which is dynamic)
         if self.options.non_cpp_plugins:
             args += ["-DCONAN_ADDITIONAL_PLUGINS=ON"]
         if self.options.enable_mobile:
@@ -93,19 +105,21 @@ endif(CONAN_ADDITIONAL_PLUGINS)''')
         self.run('cmake {0}/{1} {2} {3}'.format(self.source_folder, self.folder, cmake.command_line, ' '.join(args)))
         self.run("cmake --build . --target install {}".format(cmake.build_config))
 
-        # Patch the generated findGRPC .cmake files:
-        # cmake_find_folder = "{}/cmake/gRPC".format(self.get_install_lib_path())
-        # cmake_find_file = "{}/gRPCTargets.cmake".format(cmake_find_folder)
-        # tools.replace_in_file(cmake_find_file, 'get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)', '''get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)
-        # set(_IMPORT_PREFIX ${CONAN_GRPC_ROOT}) # NOTE: ADDED by conan''')
-
     def package(self):
-        cmake_folder = "{}/cmake/gRPC".format(self.get_install_lib_path())
         cmake_files = ["gRPCConfig.cmake", "gRPCConfigVersion.cmake", "gRPCTargets.cmake"]
+        install_lib_path = self.get_install_lib_path()
+        cmake_folder = "{}/cmake/grpc".format(install_lib_path)
+
+        print("cmake folder " + cmake_folder) 
+
         for file in cmake_files:
             self.copy(file, dst='.', src=cmake_folder)
         # Copy the build_type specific file only for our used one:
-        self.copy("gRPCTargets-{}.cmake".format("debug" if self.settings.build_type == "Debug" else "release"), dst=".", src=cmake_folder)
+        self.copy(
+                "gRPCTargets-{}.cmake".format("debug" if self.settings.build_type == "Debug" else "release"),
+                dst=".", 
+                src=cmake_folder
+         )
 
         self.copy('*', dst='include', src='{}/include'.format(self.folder))
         self.copy("*.lib", dst="lib", src="", keep_path=False)
@@ -121,8 +135,11 @@ endif(CONAN_ADDITIONAL_PLUGINS)''')
 
     def get_install_lib_path(self):
         install_path = "{}/install".format(self.build_folder)
-        if os.path.isfile("{}/lib/cmake/gRPC/gRPCTargets.cmake".format(install_path)):
+        target_cmake = "{}/lib/cmake/grpc/gRPCTargets.cmake".format(install_path)
+        target64_cmake = "{}/lib64/cmake/grpc/gRPCTargets.cmake".format(install_path)
+        if os.path.isfile(target_cmake):
+            print("target_cmake: " + target_cmake)
             return "{}/lib".format(install_path)
-        elif os.path.isfile("{}/lib64/cmake/gRPC/gRPCTargets.cmake".format(install_path)):
+        elif os.path.isfile(target64_cmake):
             return "{}/lib64".format(install_path)
-        # its "{}/install/{{lib|lib64}}/cmake/gRPC/gRPCTargets.cmake".format(self.build_folder)
+        return "UNKNOWN"
